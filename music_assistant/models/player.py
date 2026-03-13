@@ -48,12 +48,14 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_VOLUME_SCALE_MODE,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
+    CONF_VOLUME_SCALE_MODE,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -706,26 +708,34 @@ class Player(ABC):
         This is not persisted and not used or validated by the core logic.
         """
         attrs = dict(self._extra_attributes)
-        min_volume = int(
-            cast(
-                "int",
-                self.mass.config.get_raw_player_config_value(
-                    self.player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
-                ),
+        scale_mode = bool(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
             )
         )
-        max_volume = int(
-            cast(
-                "int",
-                self.mass.config.get_raw_player_config_value(
-                    self.player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
-                ),
+        if not scale_mode:
+            # Only expose min/max limits to the GUI when not in scale mode.
+            # In scale mode the slider always shows 0-100 and limits are transparent.
+            min_volume = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        self.player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                    ),
+                )
             )
-        )
-        if min_volume > 0:
-            attrs["min_volume"] = min_volume
-        if max_volume < 100:
-            attrs["max_volume"] = max_volume
+            max_volume = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        self.player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                    ),
+                )
+            )
+            if min_volume > 0:
+                attrs["min_volume"] = min_volume
+            if max_volume < 100:
+                attrs["max_volume"] = max_volume
         return attrs
 
     @property
@@ -1489,18 +1499,49 @@ class Player(ABC):
         """Return the FINAL volume level based on the playercontrol which may have been set-up."""
         volume_control = self.volume_control
         if volume_control == PLAYER_CONTROL_FAKE:
-            return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
-        if volume_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_level
-        if volume_control == PLAYER_CONTROL_NONE:
+            raw_volume: int | None = int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
+        elif volume_control == PLAYER_CONTROL_NATIVE:
+            raw_volume = self.volume_level
+        elif volume_control == PLAYER_CONTROL_NONE:
             return None
         # handle protocol player as volume control
-        if control := self.mass.players.get_player(volume_control):
+        elif control := self.mass.players.get_player(volume_control):
             return control.volume_level
         # handle player control for volume if set
-        if player_control := self.mass.players.get_player_control(volume_control):
+        elif player_control := self.mass.players.get_player_control(volume_control):
             return player_control.volume_level
-        return None
+        else:
+            return None
+        if raw_volume is None:
+            return None
+        # When scale mode is active, reverse-scale the hardware volume to logical 0-100
+        # so that the API, GUI, and integrations like Home Assistant always see 0-100%.
+        if bool(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
+            )
+        ):
+            min_vol = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        self.player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                    ),
+                )
+            )
+            max_vol = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        self.player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                    ),
+                )
+            )
+            if max_vol > min_vol:
+                raw_volume = max(
+                    0, min(100, round((raw_volume - min_vol) / (max_vol - min_vol) * 100))
+                )
+        return raw_volume
 
     @cached_property
     @final

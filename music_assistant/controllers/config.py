@@ -71,6 +71,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_VOLUME_SCALE_MODE,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_PLAYER_ICON,
@@ -1853,6 +1854,7 @@ class ConfigController:
             # Volume limit entries
             CONF_ENTRY_MIN_VOLUME,
             CONF_ENTRY_MAX_VOLUME,
+            CONF_ENTRY_VOLUME_SCALE_MODE,
             # auto-play on power on control config entry
             CONF_ENTRY_AUTO_PLAY,
         ]

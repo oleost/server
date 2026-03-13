@@ -115,6 +115,7 @@ CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
+CONF_VOLUME_SCALE_MODE: Final[str] = "volume_scale_mode"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -288,6 +289,21 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     label="Maximum volume",
     description="Maximum volume level allowed for this player. "
     "Volume commands will be capped at this level.",
+    category="player_controls",
+    advanced=True,
+)
+
+CONF_ENTRY_VOLUME_SCALE_MODE = ConfigEntry(
+    key=CONF_VOLUME_SCALE_MODE,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    label="Scale volume to min/max range",
+    description=(
+        "When enabled, the 0-100% volume range shown to users and integrations "
+        "(such as Home Assistant) is mapped to the configured min-max range, "
+        "instead of being limited to it. This keeps the user-visible range at 0-100% "
+        "while protecting speakers from excessive volume."
+    ),
     category="player_controls",
     advanced=True,
 )

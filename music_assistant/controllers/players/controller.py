@@ -78,9 +78,11 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_VOLUME_SCALE_MODE,
     CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
+    CONF_VOLUME_SCALE_MODE,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -630,21 +632,29 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_group_volume_up(player_id)
             return
         current_volume = player.state.volume_level or 0
-        max_volume = int(
-            cast(
-                "int",
-                self.mass.config.get_raw_player_config_value(
-                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
-                ),
+        scale_mode = bool(
+            self.mass.config.get_raw_player_config_value(
+                player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
             )
         )
+        if scale_mode:
+            upper_limit = 100
+        else:
+            upper_limit = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                    ),
+                )
+            )
         if current_volume < 10 or current_volume > 90:
             step_size = 1
         elif current_volume < 30 or current_volume > 70:
             step_size = 2
         else:
             step_size = 3
-        new_volume = min(max_volume, current_volume + step_size)
+        new_volume = min(upper_limit, current_volume + step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down")
@@ -660,21 +670,29 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_group_volume_down(player_id)
             return
         current_volume = player.state.volume_level or 0
-        min_volume = int(
-            cast(
-                "int",
-                self.mass.config.get_raw_player_config_value(
-                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
-                ),
+        scale_mode = bool(
+            self.mass.config.get_raw_player_config_value(
+                player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
             )
         )
+        if scale_mode:
+            lower_limit = 0
+        else:
+            lower_limit = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                    ),
+                )
+            )
         if current_volume < 10 or current_volume > 90:
             step_size = 1
         elif current_volume < 30 or current_volume > 70:
             step_size = 2
         else:
             step_size = 3
-        new_volume = max(min_volume, current_volume - step_size)
+        new_volume = max(lower_limit, current_volume - step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
@@ -1589,9 +1607,26 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     ),
                 )
             )
-            clamped = max(min_volume, min(max_volume, player.state.volume_level))
-            if clamped != player.state.volume_level:
-                self.mass.create_task(self.cmd_volume_set(player_id, clamped))
+            scale_mode = bool(
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
+                )
+            )
+            if scale_mode:
+                # With scale mode active, enforce limits using the raw hardware volume
+                # (player.state.volume_level is the reverse-scaled logical value)
+                raw_hw_volume = player.volume_level
+                if raw_hw_volume is not None:
+                    clamped_hw = max(min_volume, min(max_volume, raw_hw_volume))
+                    if clamped_hw != raw_hw_volume and max_volume > min_volume:
+                        logical = round(
+                            (clamped_hw - min_volume) / (max_volume - min_volume) * 100
+                        )
+                        self.mass.create_task(self.cmd_volume_set(player_id, logical))
+            else:
+                clamped = max(min_volume, min(max_volume, player.state.volume_level))
+                if clamped != player.state.volume_level:
+                    self.mass.create_task(self.cmd_volume_set(player_id, clamped))
 
         # signal player update on the eventbus
         if player.state.type != PlayerType.PROTOCOL:
@@ -1770,8 +1805,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
             )
             new_child_volume = int(cur_child_volume + volume_dif)
-            new_child_volume = max(child_min, new_child_volume)
-            new_child_volume = min(child_max, new_child_volume)
+            child_scale_mode = bool(
+                self.mass.config.get_raw_player_config_value(
+                    child_player.player_id,
+                    CONF_VOLUME_SCALE_MODE,
+                    CONF_ENTRY_VOLUME_SCALE_MODE.default_value,
+                )
+            )
+            if child_scale_mode:
+                # In scale mode, child volume is already in logical (0-100) space
+                new_child_volume = max(0, min(100, new_child_volume))
+            else:
+                new_child_volume = max(child_min, new_child_volume)
+                new_child_volume = min(child_max, new_child_volume)
             # Use private method to skip permission check - already validated on group
             # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
@@ -2849,7 +2895,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
 
-        # Enforce configured volume limits
+        # Enforce configured volume limits (or scale to the min/max range)
         min_volume = int(
             cast(
                 "int",
@@ -2866,7 +2912,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 ),
             )
         )
-        volume_level = max(min_volume, min(max_volume, volume_level))
+        scale_mode = bool(
+            self.mass.config.get_raw_player_config_value(
+                player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
+            )
+        )
+        if scale_mode and max_volume > min_volume:
+            # Map logical 0-100 input to the hardware min-max range
+            volume_level = round(
+                min_volume + (max(0, min(100, volume_level)) / 100) * (max_volume - min_volume)
+            )
+        else:
+            volume_level = max(min_volume, min(max_volume, volume_level))
 
         if player.type == PlayerType.GROUP:
             # redirect to special group volume control
