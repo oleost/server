@@ -1506,10 +1506,10 @@ class Player(ABC):
             return None
         # handle protocol player as volume control
         elif control := self.mass.players.get_player(volume_control):
-            return control.volume_level
+            raw_volume = control.volume_level
         # handle player control for volume if set
         elif player_control := self.mass.players.get_player_control(volume_control):
-            return player_control.volume_level
+            raw_volume = player_control.volume_level
         else:
             return None
         if raw_volume is None:
