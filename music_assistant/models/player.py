@@ -1538,12 +1538,8 @@ class Player(ABC):
                 )
             )
             if max_vol > min_vol:
-                # Do not clamp the upper bound: values above 100 are intentionally
-                # allowed so that the UI can show > 100% when the user physically
-                # overrides the hardware volume above max_volume, and so that the
-                # enforcement code detects the state change and can push it back down.
                 raw_volume = max(
-                    0, round((raw_volume - min_vol) / (max_vol - min_vol) * 100)
+                    0, min(100, round((raw_volume - min_vol) / (max_vol - min_vol) * 100))
                 )
         return raw_volume
 
