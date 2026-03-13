@@ -1613,8 +1613,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
             )
             if scale_mode:
-                # With scale mode active, enforce limits using the raw hardware volume
-                # (player.state.volume_level is the reverse-scaled logical value)
+                # With scale mode active, enforce limits using the raw hardware volume.
+                # (player.state.volume_level is the reverse-scaled logical value which
+                # may exceed 100 when hardware is above max_volume.)
                 raw_hw_volume = player.volume_level
                 if raw_hw_volume is not None:
                     clamped_hw = max(min_volume, min(max_volume, raw_hw_volume))
@@ -1622,7 +1623,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         logical = round(
                             (clamped_hw - min_volume) / (max_volume - min_volume) * 100
                         )
-                        self.mass.create_task(self.cmd_volume_set(player_id, logical))
+                        # Use task_id so rapid hardware reports don't pile up tasks.
+                        # abort_existing ensures the latest correction always wins.
+                        self.mass.create_task(
+                            self.cmd_volume_set(player_id, logical),
+                            task_id=f"enforce_volume_{player_id}",
+                            abort_existing=True,
+                        )
+                        # Schedule a follow-up check in case the device is slow to
+                        # respond or ignores the first command entirely.
+                        self.mass.call_later(
+                            2.0,
+                            self._retry_enforce_volume_limit,
+                            player_id,
+                            task_id=f"enforce_volume_retry_{player_id}",
+                        )
             else:
                 clamped = max(min_volume, min(max_volume, player.state.volume_level))
                 if clamped != player.state.volume_level:
@@ -2014,6 +2029,59 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # if the player is not using a queue, we need to stop and start playback
             await self.cmd_stop(player_id)
             await self.cmd_play(player_id)
+
+    async def _retry_enforce_volume_limit(self, player_id: str) -> None:
+        """Re-check and enforce the scale-mode volume limit.
+
+        Called 2 seconds after an out-of-range hardware volume is detected.
+        This handles the case where the device is slow to respond or silently
+        ignores the first correction command.  If the hardware is still above
+        max_volume, a new correction is sent and another retry is scheduled so
+        enforcement persists until the device actually complies.
+        """
+        player = self.get_player(player_id)
+        if player is None or not player.available:
+            return
+        scale_mode = bool(
+            self.mass.config.get_raw_player_config_value(
+                player_id, CONF_VOLUME_SCALE_MODE, CONF_ENTRY_VOLUME_SCALE_MODE.default_value
+            )
+        )
+        if not scale_mode:
+            return
+        raw_hw_volume = player.volume_level
+        if raw_hw_volume is None:
+            return
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if max_volume <= min_volume:
+            return
+        clamped_hw = max(min_volume, min(max_volume, raw_hw_volume))
+        if clamped_hw == raw_hw_volume:
+            return  # volume is now within limits – stop retrying
+        logical = round((clamped_hw - min_volume) / (max_volume - min_volume) * 100)
+        await self._handle_cmd_volume_set(player_id, logical)
+        # Schedule another retry in case the device still does not comply.
+        self.mass.call_later(
+            2.0,
+            self._retry_enforce_volume_limit,
+            player_id,
+            task_id=f"enforce_volume_retry_{player_id}",
+        )
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""
