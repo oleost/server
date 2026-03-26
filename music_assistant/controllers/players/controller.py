@@ -75,8 +75,12 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_MAX_VOLUME,
+    CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_GROUP_MEMBERS,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -1490,7 +1494,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for key in (conf_key, dsp_conf_key):
             self.mass.config.remove(key)
 
-    def signal_player_state_update(
+    def signal_player_state_update(  # noqa: PLR0915
         self,
         player: Player,
         changed_values: dict[str, tuple[Any, Any]],
@@ -1570,6 +1574,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         ) or (ATTR_ENABLED in changed_values and changed_values[ATTR_ENABLED][1] is False)
         if became_inactive and (player.state.active_group or player.state.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
+
+        if "volume_level" in changed_values:
+            self._enforce_volume_limits(player)
 
         # signal player update on the eventbus
         if player.state.type != PlayerType.PROTOCOL:
@@ -1916,6 +1923,91 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # if the player is not using a queue, we need to stop and start playback
             await self.cmd_stop(player_id)
             await self.cmd_play(player_id)
+
+    def _enforce_volume_limits(self, player: Player) -> None:
+        """Enforce min/max volume limits when volume changes externally.
+
+        Volume is always in logical (0-100) space. When the hardware reports a value
+        outside this range it means the physical device has gone beyond the configured
+        min/max limits. A corrective command is sent and a retry is scheduled in case
+        the device is slow to respond.
+        """
+        if player.state.volume_level is None:
+            return
+        player_id = player.player_id
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if not (max_volume > min_volume and (min_volume > 0 or max_volume < 100)):
+            return
+        logical_volume = player.state.volume_level
+        if 0 <= logical_volume <= 100:
+            return
+        target = max(0, min(100, logical_volume))
+        self.mass.create_task(
+            self.cmd_volume_set(player_id, target),
+            task_id=f"enforce_volume_{player_id}",
+            abort_existing=True,
+        )
+        self.mass.call_later(
+            2.0,
+            self._retry_enforce_volume_limit,
+            player_id,
+            task_id=f"enforce_volume_retry_{player_id}",
+        )
+
+    async def _retry_enforce_volume_limit(self, player_id: str) -> None:
+        """Re-check and enforce the volume limit after an out-of-range hardware report.
+
+        Called 2 seconds after enforcement is first triggered. Handles devices that are
+        slow to respond or silently ignore the correction command. Retries until the
+        device complies or the volume is back within range.
+        """
+        player = self.get_player(player_id)
+        if player is None or not player.available:
+            return
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if not (max_volume > min_volume and (min_volume > 0 or max_volume < 100)):
+            return
+        logical_volume = player.state.volume_level
+        if logical_volume is None or (0 <= logical_volume <= 100):
+            return  # volume is within limits - stop retrying
+        target = max(0, min(100, logical_volume))
+        await self._handle_cmd_volume_set(player_id, target)
+        self.mass.call_later(
+            2.0,
+            self._retry_enforce_volume_limit,
+            player_id,
+            task_id=f"enforce_volume_retry_{player_id}",
+        )
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""
@@ -2857,6 +2949,32 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+
+        # Map logical 0-100 input to the hardware min-max range when configured.
+        # With defaults (min=0, max=100) this is a no-op; the full 0-100 range is used.
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if max_volume > min_volume and (min_volume > 0 or max_volume < 100):
+            volume_level = round(
+                min_volume + (max(0, min(100, volume_level)) / 100) * (max_volume - min_volume)
+            )
+        else:
+            volume_level = max(0, min(100, volume_level))
+
         if player.type == PlayerType.GROUP:
             # redirect to special group volume control
             await self.cmd_group_volume(player_id, volume_level)
