@@ -808,6 +808,12 @@ class ConfigController:
             # rollback on error - use existing_raw to preserve all values
             self.set(conf_key, existing_raw)
             raise
+        # Background tasks (task-controller, protocol-linking, etc.) call self.set() every few
+        # seconds, which keeps resetting the DEFAULT_SAVE_DELAY timer and can delay the actual
+        # disk write by 40+ seconds after a player config change. Force an immediate write so
+        # changes are persisted right away. Subsequent self.set() calls create new timers but
+        # cannot cancel the already-queued _async_save task.
+        self.save(immediate=True)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
