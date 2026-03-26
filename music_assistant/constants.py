@@ -284,7 +284,6 @@ CONF_ENTRY_MIN_VOLUME = ConfigEntry(
         "100% always maps to the maximum."
     ),
     category="player_controls",
-    advanced=True,
 )
 
 CONF_ENTRY_MAX_VOLUME = ConfigEntry(
@@ -300,7 +299,6 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
         "100% always maps to the maximum."
     ),
     category="player_controls",
-    advanced=True,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
