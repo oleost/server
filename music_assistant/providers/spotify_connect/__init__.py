@@ -512,6 +512,9 @@ class SpotifyConnectProvider(PluginProvider):
                 self._last_volume_sent_to_spotify = volume
         except Exception as err:
             self.logger.warning("Failed to send volume command via Spotify Web API: %s", err)
+            # 404 means no active Spotify device - not actionable, don't propagate
+            if "404" in str(err):
+                return
             raise
 
     async def _get_spotify_device_id(self) -> str | None:
@@ -739,8 +742,11 @@ class SpotifyConnectProvider(PluginProvider):
             if self._spotify_provider is not None:
                 self._spotify_provider = None
                 self._update_source_capabilities()
-            # Clear active player and potentially stop daemon on session disconnect
+            # Clear active player and stop the player on session disconnect
+            prev_player_id = self._active_player_id
             self._clear_active_player()
+            if prev_player_id:
+                self.mass.create_task(self.mass.players.deselect_source(prev_player_id))
 
         # handle paused event - clear in_use_by so UI shows correct active source
         # this happens when MA starts playing while Spotify Connect was active
