@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
@@ -397,7 +398,9 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """
         Get progress (resume point) details for the given Audiobook or Podcast episode.
 
@@ -408,7 +411,8 @@ class MusicProvider(Provider):
         Will be called right before playback starts to ensure the resume position is correct.
 
         Returns a boolean with the fully_played status
-        and an integer with the resume position in ms.
+        an integer with the resume position in ms,
+        and an optional timestamp as datetime giving when this resume position was set
         """
         raise NotImplementedError
 
@@ -468,6 +472,16 @@ class MusicProvider(Provider):
         media_item is the full media item details of the played/playing track.
 
         is_playing is True when the track is currently playing.
+        """
+
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """
+        Handle callback when a library item's metadata has been updated.
+
+        Providers can implement this to sync changes to their own storage
+        (e.g. config entries, file tags).
+
+        :param item: The updated library item.
         """
 
     async def resolve_image(self, path: str) -> str | bytes:
