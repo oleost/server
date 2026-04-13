@@ -45,11 +45,15 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    CONF_ENTRY_MAX_VOLUME,
+    CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
     CONF_LINKED_PROTOCOL_IDS,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -703,7 +707,28 @@ class Player(ABC):
         attributes over the API, to be consumed by the UI (or another APi client, such as HA).
         This is not persisted and not used or validated by the core logic.
         """
-        return self._extra_attributes
+        attrs = dict(self._extra_attributes)
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    self.player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    self.player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if min_volume > 0:
+            attrs["min_volume"] = min_volume
+        if max_volume < 100:
+            attrs["max_volume"] = max_volume
+        return attrs
 
     @property
     @final
@@ -1538,21 +1563,48 @@ class Player(ABC):
         """Return the FINAL volume level based on the playercontrol which may have been set-up."""
         volume_control = self.volume_control
         if volume_control == PLAYER_CONTROL_FAKE:
-            return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
-        if volume_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_level
-        if volume_control == PLAYER_CONTROL_NONE:
+            raw_volume: int | None = int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
+        elif volume_control == PLAYER_CONTROL_NATIVE:
+            raw_volume = self.volume_level
+        elif volume_control == PLAYER_CONTROL_NONE:
             return None
         # handle protocol player as volume control
-        if control := self.mass.players.get_player(volume_control):
-            if control.volume_level is not None:
-                return control.volume_level
+        elif control := self.mass.players.get_player(volume_control):
+            raw_volume = control.volume_level
         # handle player control for volume if set
-        if player_control := self.mass.players.get_player_control(volume_control):
-            if player_control.volume_level is not None:
-                return player_control.volume_level
-        # control not (yet) available or has no volume, fall back to native
-        return self.volume_level
+        elif player_control := self.mass.players.get_player_control(volume_control):
+            raw_volume = player_control.volume_level
+        else:
+            return None
+        if raw_volume is None:
+            # control not (yet) available or has no volume, fall back to native
+            raw_volume = self.volume_level
+        if raw_volume is None:
+            return None
+        # When min/max volume is configured, reverse-scale the hardware volume to
+        # logical 0-100 so that all API clients (UI, HA, mobile apps) always see
+        # a consistent 0-100% range regardless of the configured hardware limits.
+        min_vol = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    self.player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_vol = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    self.player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if max_vol > min_vol and (min_vol > 0 or max_vol < 100):
+            return max(
+                0, round((raw_volume - min_vol) / (max_vol - min_vol) * 100)
+            )
+        return raw_volume
 
     @cached_property
     @final

@@ -1184,7 +1184,7 @@ class SpotifyProvider(MusicProvider):
         ):
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = int(response.headers.get("Retry-After", 5))
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )
@@ -1223,7 +1223,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = int(response.headers.get("Retry-After", 5))
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )
@@ -1253,7 +1253,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = int(response.headers.get("Retry-After", 5))
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )
@@ -1286,7 +1286,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = int(response.headers.get("Retry-After", 5))
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )

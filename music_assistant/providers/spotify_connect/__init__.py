@@ -512,6 +512,9 @@ class SpotifyConnectProvider(PluginProvider):
                 self._last_volume_sent_to_spotify = volume
         except Exception as err:
             self.logger.warning("Failed to send volume command via Spotify Web API: %s", err)
+            # 404 means no active Spotify device - not actionable, don't propagate
+            if "404" in str(err):
+                return
             raise
 
     async def _get_spotify_device_id(self) -> str | None:
